@@ -19,14 +19,14 @@ def get_user(user_id: int):
 @router.post("/users/", response_model=UserResponse, status_code=201)
 def create_user(user: UserCreate):
     try:
-        return UserService().create_user(user.username, user.password)
+        return UserService().create_user(user)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.put("/users/{user_id}", response_model=UserResponse)
 def update_user(user_id: int, user: UserUpdate):
     try:
-        return UserService().update_user(user_id, user.username, user.password)
+        return UserService().update_user(user_id, user)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -47,7 +47,7 @@ def get_user_by_username(username: str):
 @router.post("/auth/login", response_model=LoginResponse)
 def login(credentials: LoginRequest):
     try:
-        result = UserService().login(credentials.username, credentials.password)
+        result = UserService().login(credentials)
         return {
             "id": result["user"].id,
             "username": result["user"].username,
