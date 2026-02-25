@@ -2,9 +2,19 @@ from fastapi import WebSocket, WebSocketDisconnect, APIRouter, HTTPException
 from typing import Dict, Set, List
 import json
 import logging
+from app.features.user.repositories.user_repository import UserRepository
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def get_user_or_none(user_id: int):
+    """Buscar usuario en BD por ID"""
+    try:
+        repo = UserRepository()
+        return repo.get_user_by_id(user_id)
+    except Exception:
+        return None
 
 
 class StreamManager:
@@ -105,7 +115,22 @@ async def stream_endpoint(websocket: WebSocket, streamer_id: int):
     """
     SOLO PARA STREAMERS: Endpoint para iniciar/mantener un stream
     """
-    await manager.start_stream(streamer_id, websocket, username=f"Streamer {streamer_id}")
+    # Verificar que el usuario existe y es streamer
+    user = get_user_or_none(streamer_id)
+    if not user:
+        await websocket.close(code=4004, reason="Usuario no encontrado")
+        return
+    if user.rol != 'streamer':
+        await websocket.close(code=4003, reason="Solo los streamers pueden iniciar un stream")
+        return
+
+    await manager.start_stream(streamer_id, websocket, username=user.username)
+
+    # Notificar a todos que el stream inició
+    await manager.broadcast_to_stream(streamer_id, {
+        "type": "system",
+        "message": f"{user.username} ha iniciado el stream."
+    })
 
     try:
         while True:
@@ -118,24 +143,38 @@ async def stream_endpoint(websocket: WebSocket, streamer_id: int):
             # Enviar mensaje a todos los viewers
             await manager.broadcast_to_stream(streamer_id, {
                 "type": "stream_message",
-                "streamer_id": streamer_id,
-                "data": message
+                "sender": user.username,
+                "message": message
             })
 
     except WebSocketDisconnect:
+        # Notificar que el stream terminó
+        await manager.broadcast_to_stream(streamer_id, {
+            "type": "system",
+            "message": f"{user.username} ha terminado el stream."
+        })
         manager.disconnect_streamer(streamer_id)
-        logger.info(f"Streamer {streamer_id} desconectado")
+        logger.info(f"Streamer {user.username} desconectado")
 
 
 @router.websocket("/ws/watch/{streamer_id}/{viewer_id}")
 async def watch_stream_endpoint(websocket: WebSocket, streamer_id: int, viewer_id: int):
     """
     PARA FOLLOWERS: Conectarse a un stream de un streamer
-    
-    Validar que viewer_id sea seguidor de streamer_id ANTES de conectar
-    (La validación se hace desde el cliente o requiere token)
     """
-    # Verificar si el stream existe
+    # Verificar que el viewer existe
+    viewer = get_user_or_none(viewer_id)
+    if not viewer:
+        await websocket.close(code=4004, reason="Usuario no encontrado")
+        return
+
+    # Verificar que el streamer existe
+    streamer = get_user_or_none(streamer_id)
+    if not streamer:
+        await websocket.close(code=4004, reason="Streamer no encontrado")
+        return
+
+    # Verificar si el stream está activo
     if streamer_id not in manager.active_streams:
         await websocket.close(code=4001, reason="Stream no disponible")
         return
@@ -145,6 +184,12 @@ async def watch_stream_endpoint(websocket: WebSocket, streamer_id: int, viewer_i
     if not success:
         await websocket.close(code=4001, reason="No se pudo unir al stream")
         return
+
+    # Notificar que el viewer se unió
+    await manager.broadcast_to_stream(streamer_id, {
+        "type": "system",
+        "message": f"{viewer.username} se ha unido al chat."
+    })
 
     try:
         while True:
@@ -157,14 +202,18 @@ async def watch_stream_endpoint(websocket: WebSocket, streamer_id: int, viewer_i
 
             # Reenviar mensaje a TODOS (streamer + viewers)
             await manager.broadcast_to_stream(streamer_id, {
-                "type": "viewer_message",
-                "viewer_id": viewer_id,
+                "type": "chat_message",
+                "sender": viewer.username,
                 "message": message
             })
 
     except WebSocketDisconnect:
         manager.disconnect_viewer(streamer_id, websocket)
-        logger.info(f"Viewer {viewer_id} se unchó del stream")
+        await manager.broadcast_to_stream(streamer_id, {
+            "type": "system",
+            "message": f"{viewer.username} ha salido del chat."
+        })
+        logger.info(f"Viewer {viewer.username} salió del stream")
 
 
 
