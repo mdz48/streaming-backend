@@ -8,7 +8,6 @@ from app.shared.config.database import init_db
 app = FastAPI(title="Streaming API")
 
 app.include_router(user_router, prefix="/api", tags=["Users"])
-app.include_router(ws_router, tags=["Chat"])
 
 app.add_middleware(
     CORSMiddleware,
