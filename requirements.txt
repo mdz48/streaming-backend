@@ -1,0 +1,11 @@
+fastapi[standard]
+uvicorn
+bcrypt==4.0.1
+SQLAlchemy
+python-dotenv
+passlib[bcrypt]
+pymysql
+python-jose[cryptography]
+cryptography
+httpx
+mysql-connector-python==9.6.0
