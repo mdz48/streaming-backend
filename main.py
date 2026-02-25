@@ -1,7 +1,6 @@
 from fastapi import FastAPI
 from app.shared.config.database import init_db
 from app.features.user.routes.user_routes import router as user_router
-from websocket import router as ws_router
 from fastapi.middleware.cors import CORSMiddleware
 from app.shared.config.database import init_db
 

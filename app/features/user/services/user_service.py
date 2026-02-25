@@ -59,6 +59,51 @@ class UserService:
         payload = {
             "id": user.id,
             "username": user.username,
+            "rol": user.rol,
+            "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         }
-        token = create_access_token(payload)
-        return {"user": user, "access_token": token, "token_type": "bearer"}
+        access_token = jwt.encode(payload, os.getenv('SECRET_KEY'), algorithm="HS256")
+        return {
+            "id": user.id,
+            "username": user.username,
+            "rol": user.rol,
+            "access_token": access_token,
+            "token_type": "bearer"
+        }
+
+    def follow_streamer(self, follower_id: int, streamer_id: int) -> bool:
+        """Que un follower siga a un streamer"""
+        # Verificar que ambos usuarios existan
+        if not self.user_repository.get_user_by_id(follower_id):
+            raise ValueError("Follower not found")
+        if not self.user_repository.get_user_by_id(streamer_id):
+            raise ValueError("Streamer not found")
+        
+        # Verificar que el streamer sea un streamer
+        streamer = self.user_repository.get_user_by_id(streamer_id)
+        if streamer.rol != 'streamer':
+            raise ValueError("Can only follow streamers")
+        
+        # Verificar que no ya no esté siguiendo
+        if self.user_repository.is_following(follower_id, streamer_id):
+            raise ValueError("Already following this streamer")
+        
+        return self.user_repository.add_follow(follower_id, streamer_id)
+
+    def unfollow_streamer(self, follower_id: int, streamer_id: int) -> bool:
+        """Que un follower deje de seguir a un streamer"""
+        if not self.user_repository.is_following(follower_id, streamer_id):
+            raise ValueError("Not following this streamer")
+        return self.user_repository.remove_follow(follower_id, streamer_id)
+
+    def get_followers(self, streamer_id: int) -> List[dict]:
+        """Obtener lista de followers de un streamer"""
+        if not self.user_repository.get_user_by_id(streamer_id):
+            raise ValueError("Streamer not found")
+        return self.user_repository.get_followers(streamer_id)
+
+    def get_following(self, follower_id: int) -> List[User]:
+        """Obtener lista de streamers que sigue un usuario"""
+        if not self.user_repository.get_user_by_id(follower_id):
+            raise ValueError("User not found")
+        return self.user_repository.get_following(follower_id)

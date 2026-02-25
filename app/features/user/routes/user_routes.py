@@ -48,6 +48,44 @@ def get_user_by_username(username: str):
 def login(credentials: LoginRequest):
     try:
         result = UserService().login(credentials)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+@router.post("/follow/{follower_id}/{streamer_id}", status_code=201)
+def follow_streamer(follower_id: int, streamer_id: int):
+    """Un follower sigue a un streamer"""
+    try:
+        UserService().follow_streamer(follower_id, streamer_id)
+        return {"message": f"User {follower_id} now follows streamer {streamer_id}"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.delete("/follow/{follower_id}/{streamer_id}", status_code=200)
+def unfollow_streamer(follower_id: int, streamer_id: int):
+    """Un follower deja de seguir a un streamer"""
+    try:
+        UserService().unfollow_streamer(follower_id, streamer_id)
+        return {"message": f"User {follower_id} unfollowed streamer {streamer_id}"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/streamers/{streamer_id}/followers")
+def get_streamer_followers(streamer_id: int):
+    """Obtener lista de followers de un streamer"""
+    try:
+        followers = UserService().get_followers(streamer_id)
+        return {"streamer_id": streamer_id, "followers": followers}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@router.get("/users/{user_id}/following", response_model=List[UserResponse])
+def get_user_following(user_id: int):
+    """Obtener lista de streamers que sigue un usuario"""
+    try:
+        return UserService().get_following(user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
         return {
             "id": result["user"].id,
             "username": result["user"].username,

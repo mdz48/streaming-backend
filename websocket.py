@@ -1,65 +1,170 @@
-from fastapi import WebSocket, WebSocketDisconnect, APIRouter
-from typing import Dict
+from fastapi import WebSocket, WebSocketDisconnect, APIRouter, HTTPException
+from typing import Dict, Set, List
 import json
+import logging
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
-class ConnectionManager:
+
+class StreamManager:
     def __init__(self):
-        # user_id -> WebSocket
-        self.active_connections: Dict[str, WebSocket] = {}
+        # streamer_id -> {"streamer": User, "viewers": Set[WebSocket]}
+        self.active_streams: Dict[int, dict] = {}
+        # user_id -> WebSocket (para streamers)
+        self.streamer_connections: Dict[int, WebSocket] = {}
+        # seguimiento de quiénes siguen a quiénes
+        self.followers: Dict[int, Set[int]] = {}  # streamer_id -> {follower_ids}
 
-    async def connect(self, user_id: str, websocket: WebSocket):
+    def add_follower(self, follower_id: int, streamer_id: int):
+        """Agregar seguidor a streamer"""
+        if streamer_id not in self.followers:
+            self.followers[streamer_id] = set()
+        self.followers[streamer_id].add(follower_id)
+
+    def is_follower(self, follower_id: int, streamer_id: int) -> bool:
+        """Verificar si un usuario sigue a un streamer"""
+        return streamer_id in self.followers and follower_id in self.followers[streamer_id]
+
+    async def start_stream(self, streamer_id: int, websocket: WebSocket, username: str):
+        """Iniciar stream de un streamer"""
         await websocket.accept()
-        self.active_connections[user_id] = websocket
+        self.streamer_connections[streamer_id] = websocket
+        self.active_streams[streamer_id] = {
+            "username": username,
+            "viewers": set()
+        }
+        logger.info(f"Streamer {username} (ID: {streamer_id}) inició stream")
 
-    def disconnect(self, user_id: str):
-        self.active_connections.pop(user_id, None)
+    async def join_stream(self, viewer_id: int, streamer_id: int, websocket: WebSocket) -> bool:
+        """Que un viewer se una a un stream"""
+        if streamer_id not in self.active_streams:
+            return False  # Stream no existe
 
-    async def broadcast(self, message: dict, sender_id: str = None):
-        disconnected = []
-        for uid, connection in self.active_connections.items():
+        await websocket.accept()
+        self.active_streams[streamer_id]["viewers"].add(websocket)
+        logger.info(f"Viewer {viewer_id} se unió al stream de {streamer_id}")
+        return True
+
+    async def broadcast_to_stream(self, streamer_id: int, message: dict, exclude_ws: WebSocket = None):
+        """Enviar mensaje a TODOS en el stream (streamer + viewers)"""
+        if streamer_id not in self.active_streams:
+            return
+
+        # Enviar al streamer
+        streamer_ws = self.streamer_connections.get(streamer_id)
+        if streamer_ws and streamer_ws != exclude_ws:
             try:
-                await connection.send_json(message)
+                await streamer_ws.send_json(message)
             except Exception:
-                disconnected.append(uid)
-        for uid in disconnected:
-            self.disconnect(uid)
+                pass
 
-    async def send_to(self, user_id: str, message: dict):
-        connection = self.active_connections.get(user_id)
-        if connection:
-            await connection.send_json(message)
+        # Enviar a todos los viewers
+        disconnected = []
+        for viewer_ws in self.active_streams[streamer_id]["viewers"]:
+            if viewer_ws == exclude_ws:
+                continue
+            try:
+                await viewer_ws.send_json(message)
+            except Exception:
+                disconnected.append(viewer_ws)
+
+        for ws in disconnected:
+            self.active_streams[streamer_id]["viewers"].discard(ws)
+
+    def disconnect_streamer(self, streamer_id: int):
+        """Desconectar streamer y cerrar su stream"""
+        if streamer_id in self.streamer_connections:
+            del self.streamer_connections[streamer_id]
+        if streamer_id in self.active_streams:
+            del self.active_streams[streamer_id]
+        logger.info(f"Streamer {streamer_id} desconectado")
+
+    def disconnect_viewer(self, streamer_id: int, websocket: WebSocket):
+        """Remover viewer del stream"""
+        if streamer_id in self.active_streams:
+            self.active_streams[streamer_id]["viewers"].discard(websocket)
+
+    def get_active_streams(self) -> List[dict]:
+        """Obtener lista de streams activos"""
+        return [
+            {
+                "streamer_id": sid,
+                "username": info["username"],
+                "viewers_count": len(info["viewers"])
+            }
+            for sid, info in self.active_streams.items()
+        ]
 
 
-manager = ConnectionManager()
+manager = StreamManager()
 
 
-@router.websocket("/ws/chat/{user_id}")
-async def chat_endpoint(websocket: WebSocket, user_id: str):
-    await manager.connect(user_id, websocket)
-    await manager.broadcast({
-        "type": "system",
-        "message": f"{user_id} se ha unido al chat.",
-        "sender": "system"
-    })
+@router.websocket("/ws/stream/{streamer_id}")
+async def stream_endpoint(websocket: WebSocket, streamer_id: int):
+    """
+    SOLO PARA STREAMERS: Endpoint para iniciar/mantener un stream
+    """
+    await manager.start_stream(streamer_id, websocket, username=f"Streamer {streamer_id}")
+
     try:
         while True:
-            raw = await websocket.receive_text()
+            data = await websocket.receive_text()
             try:
-                data = json.loads(raw)
-                message_text = data.get("message", raw)
+                message = json.loads(data)
             except json.JSONDecodeError:
-                message_text = raw
-            await manager.broadcast({
-                "type": "message",
-                "sender": user_id,
-                "message": message_text
+                message = {"content": data}
+
+            # Enviar mensaje a todos los viewers
+            await manager.broadcast_to_stream(streamer_id, {
+                "type": "stream_message",
+                "streamer_id": streamer_id,
+                "data": message
             })
+
     except WebSocketDisconnect:
-        manager.disconnect(user_id)
-        await manager.broadcast({
-            "type": "system",
-            "message": f"{user_id} ha salido del chat.",
-            "sender": "system"
-        })
+        manager.disconnect_streamer(streamer_id)
+        logger.info(f"Streamer {streamer_id} desconectado")
+
+
+@router.websocket("/ws/watch/{streamer_id}/{viewer_id}")
+async def watch_stream_endpoint(websocket: WebSocket, streamer_id: int, viewer_id: int):
+    """
+    PARA FOLLOWERS: Conectarse a un stream de un streamer
+    
+    Validar que viewer_id sea seguidor de streamer_id ANTES de conectar
+    (La validación se hace desde el cliente o requiere token)
+    """
+    # Verificar si el stream existe
+    if streamer_id not in manager.active_streams:
+        await websocket.close(code=4001, reason="Stream no disponible")
+        return
+
+    # Conectarse al stream
+    success = await manager.join_stream(viewer_id, streamer_id, websocket)
+    if not success:
+        await websocket.close(code=4001, reason="No se pudo unir al stream")
+        return
+
+    try:
+        while True:
+            # El viewer envía mensajes de chat
+            data = await websocket.receive_text()
+            try:
+                message = json.loads(data)
+            except json.JSONDecodeError:
+                message = {"content": data}
+
+            # Reenviar mensaje a TODOS (streamer + viewers)
+            await manager.broadcast_to_stream(streamer_id, {
+                "type": "viewer_message",
+                "viewer_id": viewer_id,
+                "message": message
+            })
+
+    except WebSocketDisconnect:
+        manager.disconnect_viewer(streamer_id, websocket)
+        logger.info(f"Viewer {viewer_id} se unchó del stream")
+
+
+
